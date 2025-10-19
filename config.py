@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # Токен Telegram-бота (устанавливается через .env как BOT_TOKEN)
     BOT_TOKEN: str | None = ""
     # URL вебхука для Telegram (если используется). Пример: https://domain.tld/tg/webhook
-    WEBHOOK_URL: str | None = "https://christinia-noncontagious-bradyauxetically.ngrok-free.dev/tg/webhook"
+    WEBHOOK_URL: str | None = os.environ.get("WEBHOOK_URL", "https://christinia-noncontagious-bradyauxetically.ngrok-free.dev/tg/webhook")
     
     model_config = SettingsConfigDict(
         env_file='.env',
