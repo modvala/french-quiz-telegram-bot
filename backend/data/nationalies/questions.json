@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "question": "Назови националност мушког пола у земљи",
+    "country": "les États-Unis",
+    "options": ["Américain", "Serbe", "Russe"],
+    "answer": "Américain",
+    "audio": "usa.mp3"
+  },
+  {
+    "id": 2,
+    "question": "Назови националност женског пола у земљи",
+    "country": "la Serbie",
+    "options": ["Serbe", "Américaine", "Russe"],
+    "answer": "Serbe",
+    "audio": "serbia.mp3"
+  },
+  {
+    "id": 3,
+    "question": "Назови националност мушког пола у земљи",
+    "country": "la Russie",
+    "options": ["Russe", "Américain", "Serbe"],
+    "answer": "Russe",
+    "audio": "russia.mp3"
+  }
+]

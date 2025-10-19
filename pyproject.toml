@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "quiz-bot"
+packages = [{include = "backend/src"}]
+version = "0.1.0"
+description = "Telegram bot and backend for French nationality quiz."
+authors = ["modvala <you@example.com>"]
+package-mode = true
+
+[tool.poetry.dependencies]
+python = "^3.11"
+aiogram = "3.15.0"
+fastapi = "0.119.0"
+uvicorn = {extras = ["standard"], version = "0.22.0"}
+gTTS = "2.5.4"
+pydantic = ">=2.0.0"
+pydantic-settings = ">=2.0.0"
+# synced from requirements.txt
+httpx = "0.27.2"
+python-dotenv = "1.0.1"
+
+[tool.poetry.scripts]
+start-bot = "bot.main:main"
+start-backend = "backend.app:run"
+
+[tool.poetry.group.test]
+optional = false
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.0"
+pytest-cov = "^4.0"
+httpx = "^0.24"
+pytest-asyncio = "^0.21"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
