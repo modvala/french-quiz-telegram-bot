@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+import os
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,14 +18,14 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     
     # Настройки для бота / клиента
-    # Токен Telegram-бота (пустая строка по умолчанию — безопасно)
-    BOT_TOKEN: str = ""
     # Базовый URL API (FastAPI)
-    API_BASE: str = "http://127.0.0.1:8000"
+    API_BASE: str = os.environ.get("API_BASE", "http://127.0.0.1:8080")
     # Количество вопросов по умолчанию
     N_QUESTIONS: int = 3
-    # Опциональный токен для авторизации запросов к backend (Bearer)
-    API_TOKEN: str = ""
+    # Токен Telegram-бота (устанавливается через .env как BOT_TOKEN)
+    BOT_TOKEN: str | None = ""
+    # URL вебхука для Telegram (если используется). Пример: https://domain.tld/tg/webhook
+    WEBHOOK_URL: str | None = "https://christinia-noncontagious-bradyauxetically.ngrok-free.dev/tg/webhook"
     
     model_config = SettingsConfigDict(
         env_file='.env',

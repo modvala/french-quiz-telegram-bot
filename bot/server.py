@@ -9,6 +9,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
+from fastapi import FastAPI, Request
+from aiogram.types import Update
+
+from config import settings
+
 import httpx
 
 # Заменено: берём настройки из отдельного модуля конфигурации
@@ -232,6 +237,28 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
 async def restart(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
     await start_cmd(cb.message, state)
+
+app = FastAPI(title="WordQuiz Bot Webhook")
+
+@app.on_event("startup")
+async def _on_startup():
+    async with bot:
+        await bot.set_webhook(settings.WEBHOOK_URL, drop_pending_updates=True)
+
+@app.on_event("shutdown")
+async def _on_shutdown():
+    async with bot:
+        await bot.delete_webhook(drop_pending_updates=True)
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+@app.post("/tg/webhook")
+async def tg_webhook(request: Request):
+    update = Update.model_validate(await request.json())
+    await dp.feed_update(bot, update)
+    return {"ok": True}
 
 
 # ====== Точка входа ======
