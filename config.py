@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Настройки для бота / клиента
     # Базовый URL API (FastAPI)
     API_BASE: str = os.environ.get("API_BASE", "http://127.0.0.1:8080")
+    API_TOKEN: str | None = os.environ.get("API_TOKEN", "")
     # Количество вопросов по умолчанию
     N_QUESTIONS: int = 3
     # Токен Telegram-бота (устанавливается через .env как BOT_TOKEN)
