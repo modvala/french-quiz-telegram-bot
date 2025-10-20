@@ -175,10 +175,21 @@ async def start_cmd(m: types.Message, state: FSMContext):
     user_id = str(m.from_user.id)
 
     # POST /quiz/start
-    started = await api_post("/quiz/start", {
-        "user_id": user_id,
-        "n_questions": settings.N_QUESTIONS
-    })
+    try:
+        started = await api_post("/quiz/start", {
+            "user_id": user_id,
+            "n_questions": settings.N_QUESTIONS
+        })
+    except Exception as e:
+        # Handle backend unavailable / HTTP errors gracefully
+        err_text = str(e)
+        try:
+            await m.answer("Не удалось связаться с сервером викторины. Пожалуйста, попробуйте позже.")
+        except Exception:
+            pass
+        # Log to console as well
+        print(f"Error starting quiz for user {user_id}: {err_text}")
+        return
 
     session_id = started["session_id"]
     await state.set_state(QuizState.active)

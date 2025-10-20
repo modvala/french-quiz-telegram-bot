@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     API_BASE: str = os.environ.get("API_BASE", "http://127.0.0.1:8080")
     API_TOKEN: str | None = os.environ.get("API_TOKEN", "")
     # Количество вопросов по умолчанию
-    N_QUESTIONS: int = 3
+    N_QUESTIONS: int = 10
     # Токен Telegram-бота (устанавливается через .env как BOT_TOKEN)
     BOT_TOKEN: str | None = ""
     # URL вебхука для Telegram (если используется). Пример: https://domain.tld/tg/webhook
