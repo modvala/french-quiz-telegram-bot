@@ -19,6 +19,48 @@
       "country": "la Russie",
       "answer": "un Russe et une Russe",
       "audio": "audio/q3.mp3"
+    },
+    {
+      "id": 4,
+      "country": "la France",
+      "answer": "un Français et une Française",
+      "audio": "audio/q4.mp3"
+    },
+    {
+      "id": 5,
+      "country": "l'Angleterre",
+      "answer": "un Anglais et une Anglaise",
+      "audio": "audio/q5.mp3"
+    },
+    {
+      "id": 6,
+      "country": "l'Allemagne",
+      "answer": "un Allemand et une Allemande",
+      "audio": "audio/q6.mp3"
+    },
+    {
+      "id": 7,
+      "country": "l'Espagne",
+      "answer": "un Espagnol et une Espagnole",
+      "audio": "audio/q7.mp3"
+    },
+    {
+      "id": 8,
+      "country": "le Sheziland",
+      "answer": "un Swazi et une Swazie",
+      "audio": "audio/q8.mp3"
+    },
+    {
+      "id": 9,
+      "country": "l'Italie",
+      "answer": "un Italien et une Italienne",
+      "audio": "audio/q9.mp3"
+    },
+    {
+      "id": 10,
+      "country": "le Canada",
+      "answer": "un Canadien et une Canadienne",
+      "audio": "audio/q10.mp3"
     }
   ]
 }

@@ -150,7 +150,6 @@ async def show_question(chat_id: int, state: FSMContext) -> None:
     # Отправляем короткое перечисление вариантов (номера) и клавиатуру выбора.
     opt_numbers = [str(opt.get("number", i + 1)) for i, opt in enumerate(q.get("options", []))]
     if opt_numbers:
-        await bot.send_message(chat_id, "Варианты: " + ", ".join(opt_numbers))
         for opt in q.get("options", []):
             audio_url = opt.get("audio_url")
             if not audio_url:
@@ -242,9 +241,9 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
         # Show country name when answer is correct (if provided)
         country = ans.get("country")
         if country:
-            await cb.message.answer(f"✅ Правильно! Страна: <b>{country}</b>", parse_mode="HTML")
+            await cb.message.answer(f"✅ Правильно! Страна: <b>{country}</b>, Правильный ответ: <b>{ans['correct_option_text']}</b>", parse_mode="HTML")
         else:
-            await cb.message.answer("✅ Правильно!")
+            await cb.message.answer(f"✅ Правильно! Правильный ответ: <b>{ans['correct_option_text']}</b>", parse_mode="HTML")
     else:
         # On incorrect answer show correct answer text and country (if any),
         # and play the correct option audio if available.

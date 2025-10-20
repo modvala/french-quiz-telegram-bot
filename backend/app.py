@@ -112,7 +112,7 @@ def load_questions() -> tuple[Dict[int, dict], int]:
         qid = int(it.get("id"))
         country = it.get("country")
         # include the country name in the prompt (e.g. "Назови национальность в стране: la Serbie")
-        prompt = f"{base_prompt}: {country}" if country else base_prompt
+        prompt = f"{base_prompt}:" if country else base_prompt
         answer_text = it.get("answer")
         prompt_audio = it.get("audio")
         raw_questions[qid] = {
