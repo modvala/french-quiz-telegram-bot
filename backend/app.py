@@ -96,6 +96,51 @@ def _audio_url(path: Optional[str]) -> Optional[str]:
     return path
 
 
+def _audio_for_option_text(text: Optional[str]) -> Optional[str]:
+    """
+    Given option text like 'un Américain' try to find a matching question
+    in RAW_QUESTIONS whose answer contains the same base, and return a
+    relative audio path (e.g. 'audio/q2_answer.mp3') if a file exists.
+    """
+    if not text or not isinstance(text, str):
+        return None
+
+    # extract base similarly to other places: strip 'un ' and trailing ' et...'
+    opt_base = None
+    if text.startswith("un ") and " et" in text:
+        opt_base = text[len("un ") :].split(" et")[0].strip()
+    else:
+        parts = text.split()
+        opt_base = parts[1] if len(parts) > 1 else parts[0]
+
+    if not opt_base:
+        return None
+
+    audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
+
+    # find a RAW_QUESTION whose answer contains this base
+    for rid, rdata in RAW_QUESTIONS.items():
+        ans = rdata.get("answer")
+        if not ans:
+            continue
+        # extract base from raw answer too
+        raw_base = None
+        if ans.startswith("un ") and " et" in ans:
+            raw_base = ans[len("un ") :].split(" et")[0].strip()
+        else:
+            parts = ans.split()
+            raw_base = parts[1] if len(parts) > 1 else parts[0]
+
+        if raw_base and raw_base == opt_base:
+            # check for audio files for this question id
+            for suffix in ("_answer.mp3"):
+                candidate = audio_dir / f"q{rid}{suffix}"
+                if candidate.exists():
+                    return f"audio/q{rid}{suffix}"
+
+    return None
+
+
 def load_questions() -> Dict[int, dict]:
     # Return raw question data (id -> dict) from JSON
     raw_questions: Dict[int, dict] = {}
@@ -413,9 +458,13 @@ def get_question(session_id: UUID, index: int):
     # Prepare options with numbers and audio URLs
     option_responses = []
     for opt in q.options:
+        audio_path = opt.audio
+        # if option has no audio set, try to resolve it from RAW_QUESTIONS
+        if not audio_path:
+            audio_path = _audio_for_option_text(opt.text)
         option_responses.append(OptionResponse(
             number=opt.id,
-            audio_url=_audio_url(opt.audio)
+            audio_url=_audio_url(audio_path)
         ))
     
     return QuestionOut(
