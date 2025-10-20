@@ -98,6 +98,12 @@ def restart_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def next_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Следующий вопрос", callback_data="next")]
+    ])
+
+
 # ====== Показ вопроса ======
 async def show_question(chat_id: int, state: FSMContext) -> None:
     data = await state.get_data()
@@ -227,9 +233,10 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
         )
         return
     else:
-        # перейти к следующему индексу
+        # перейти к следующему индексу, но НЕ показывать вопрос автоматически
+        # — пользователь нажмёт кнопку "Следующий вопрос"
         await state.update_data(index=index + 1)
-        await show_question(cb.message.chat.id, state)
+        await cb.message.answer("Нажмите, чтобы перейти к следующему вопросу:", reply_markup=next_keyboard())
 
 
 # ====== Рестарт ======
@@ -237,6 +244,24 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
 async def restart(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
     await start_cmd(cb.message, state)
+
+
+# Обработчик кнопки "Следующий вопрос"
+@dp.callback_query(F.data == "next")
+async def next_question(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    if not data or "session_id" not in data:
+        await cb.message.answer("Сессия не найдена, нажмите /start")
+        return
+
+    # если квиз уже завершён, предложим рестарт
+    if data.get("index") is None:
+        await cb.message.answer("Неправильное состояние сессии. Нажмите /start")
+        return
+
+    # Показываем следующий вопрос (show_question использует текущий index из state)
+    await show_question(cb.message.chat.id, state)
 
 app = FastAPI(title="WordQuiz Bot Webhook")
 
