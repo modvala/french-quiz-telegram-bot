@@ -7,8 +7,10 @@ import random
 from uuid import uuid4, UUID
 from pathlib import Path
 import json
+import hashlib
 
 from config import settings
+from src.utils.tts import text_to_mp3
 
 
 app = FastAPI(title="WordQuiz API")
@@ -25,7 +27,7 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 class Option(BaseModel):
     id: int
     text: str
-    audio: Optional[str] = None  # путь к аудио варианта (отдаём только при правильном ответе)
+    audio: Optional[str] = None  # путь к аудио варианта
 
 
 class Question(BaseModel):
@@ -44,7 +46,8 @@ class QuizSession(BaseModel):
     correct_count: int = 0
     finished: bool = False
     answers: Dict[int, bool] = Field(default_factory=dict)  # question_id -> correct?
-    question_map: Dict[int, Question] = Field(default_factory=dict)  # per-session Question objects
+    # per-session Question objects keyed by position index (0..n-1)
+    question_map: Dict[int, Question] = Field(default_factory=dict)
 
 
 SESSIONS: Dict[UUID, QuizSession] = {}
@@ -107,7 +110,7 @@ def load_questions() -> Dict[int, dict]:
     for it in items:
         qid = int(it.get("id"))
         country = it.get("country")
-        prompt = f"{base_prompt} — {country}" if country else base_prompt
+        prompt = f"{base_prompt}: " if country else base_prompt
         answer_text = it.get("answer")
         prompt_audio = it.get("audio")
         raw_questions[qid] = {
@@ -122,6 +125,29 @@ def load_questions() -> Dict[int, dict]:
 
 # Load RAW questions at import time
 RAW_QUESTIONS: Dict[int, dict] = load_questions()
+
+
+def _generate_option_audio(text: str) -> Optional[str]:
+    """Generate audio file for option text and return relative path."""
+    try:
+        # Create a unique filename based on text hash
+        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        filename = f"option_{text_hash}"
+        
+        # Generate audio file
+        audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
+        audio_path = text_to_mp3(
+            text=text,
+            filename=filename,
+            lang="fr",
+            out_path=audio_dir
+        )
+        
+        # Return relative path from audio directory
+        return f"audio/{audio_path.name}"
+    except Exception as e:
+        print(f"Error generating audio for '{text}': {e}")
+        return None
 
 
 def _get_question_or_404(qid: int) -> Question:
@@ -152,6 +178,11 @@ class StartQuizOut(BaseModel):
     first_question_id: int
 
 
+class OptionResponse(BaseModel):
+    number: int  # номер для выбора (1, 2, 3, 4)
+    audio_url: Optional[str] = None  # аудио для воспроизведения
+
+
 class QuestionOut(BaseModel):
     session_id: UUID
     index: int
@@ -159,7 +190,7 @@ class QuestionOut(BaseModel):
     question_id: int
     prompt_text: str
     prompt_audio_url: Optional[str] = None
-    options: List[str]  # возвращаем только тексты опций
+    options: List[OptionResponse]  # возвращаем номера с аудио
 
 
 class AnswerIn(BaseModel):
@@ -200,8 +231,10 @@ def start_quiz(payload: StartQuizIn):
     all_ids = list(RAW_QUESTIONS.keys())
     if not all_ids:
         raise HTTPException(500, "No questions configured on the server")
-    n = max(1, min(payload.n_questions, len(all_ids)))
-    chosen_ids = random.sample(all_ids, n)
+    # n_questions может быть любым, вопросы выбираются с повторениями
+    n = max(1, int(payload.n_questions))
+    # random.choices позволяет выбрать с повторениями
+    chosen_ids = random.choices(all_ids, k=n)
 
     session = QuizSession(
         session_id=uuid4(),
@@ -209,7 +242,7 @@ def start_quiz(payload: StartQuizIn):
         question_ids=chosen_ids,
     )
 
-    # Build per-session Question objects with randomized options
+    # Для каждого появления вопроса (страны) в сессии опции генерируются заново
     # Pool of answers for distractors: extract masculine base from RAW answers
     pool = []
     for rid, rdata in RAW_QUESTIONS.items():
@@ -224,14 +257,17 @@ def start_quiz(payload: StartQuizIn):
             base = parts[1] if len(parts) > 1 else parts[0]
         pool.append(base)
 
-    for qid in chosen_ids:
+    # Вопросы могут повторяться, поэтому question_map и доступ к вопросам по индексу (позиции)
+    for pos, qid in enumerate(chosen_ids):
         r = RAW_QUESTIONS[qid]
         prompt = r.get("prompt_text")
         correct = r.get("answer")
 
         # build options: correct (combined) + (default_options-1) distractors
-        default_options = int(json.load(DATA_FILE.open()).get("default_options", 4))
+        with DATA_FILE.open() as f:
+            default_options = int(json.load(f).get("default_options", 4))
         opts_texts = [correct]
+        # Для каждого появления вопроса кандидаты перемешиваются заново
         candidates = [p for p in pool if p != (correct.split()[1] if len(correct.split())>1 else correct)]
         random.shuffle(candidates)
         for cand in candidates:
@@ -252,11 +288,14 @@ def start_quiz(payload: StartQuizIn):
         opts: List[Option] = []
         correct_idx = 1
         for idx, text in enumerate(enumerated, start=1):
-            opts.append(Option(id=idx, text=text, audio=None))
+            # Generate audio for each option
+            audio_path = _generate_option_audio(text)
+            opts.append(Option(id=idx, text=text, audio=audio_path))
             if text == correct:
                 correct_idx = idx
 
-        session.question_map[qid] = Question(
+        # store by position index so repeated qids can have distinct prepared objects
+        session.question_map[pos] = Question(
             id=qid,
             prompt_text=prompt,
             prompt_audio=r.get("prompt_audio"),
@@ -279,13 +318,18 @@ def get_question(session_id: UUID, index: int):
         raise HTTPException(400, "Quiz already finished")
     if not (0 <= index < len(session.question_ids)):
         raise HTTPException(400, "Index out of range")
-    qid = session.question_ids[index]
-    # get per-session question
-    q = session.question_map.get(qid)
+    # get per-session question by index (поддержка повторяющихся вопросов)
+    q = session.question_map.get(index)
     if not q:
-        # fallback to raw
-        raw = RAW_QUESTIONS.get(qid)
         raise HTTPException(500, "Session question not prepared")
+    # Prepare options with numbers and audio URLs
+    option_responses = []
+    for opt in q.options:
+        option_responses.append(OptionResponse(
+            number=opt.id,
+            audio_url=_audio_url(opt.audio)
+        ))
+    
     return QuestionOut(
         session_id=session.session_id,
         index=index,
@@ -293,7 +337,7 @@ def get_question(session_id: UUID, index: int):
         question_id=q.id,
         prompt_text=q.prompt_text,
         prompt_audio_url=_audio_url(q.prompt_audio),
-        options=[opt.text for opt in q.options],
+        options=option_responses,
     )
 
 
@@ -303,15 +347,15 @@ def submit_answer(payload: AnswerIn):
     if session.finished:
         raise HTTPException(400, "Quiz already finished")
 
-    # проверяем, что это ожидаемый вопрос
+    # проверяем, что это ожидаемый вопрос (по позиции)
     if not (0 <= session.current_index < len(session.question_ids)):
         raise HTTPException(400, "Invalid session index")
     expected_qid = session.question_ids[session.current_index]
     if expected_qid != payload.question_id:
         raise HTTPException(400, "Question order mismatch")
 
-    # Use per-session prepared question
-    q = session.question_map.get(payload.question_id)
+    # Use per-session prepared question by current index (поддержка повторяющихся вопросов)
+    q = session.question_map.get(session.current_index)
     if not q:
         raise HTTPException(400, "Question not found in session")
     is_correct = (payload.selected_option_id == q.correct_option_id)
@@ -330,7 +374,7 @@ def submit_answer(payload: AnswerIn):
         correct=is_correct,
         correct_option_id=correct_opt.id,
         correct_option_text=correct_opt.text,
-        correct_option_audio_url=_audio_url(correct_opt.audio) if is_correct else None,
+        correct_option_audio_url=_audio_url(correct_opt.audio),  # всегда возвращаем аудио правильного ответа
         score=session.correct_count,
         index=min(session.current_index, len(session.question_ids) - 1),
         total=len(session.question_ids),

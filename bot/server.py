@@ -78,12 +78,14 @@ async def fetch_bytes(url_or_path: Optional[str]) -> Optional[bytes]:
 
 
 # ===== UI helpers =====
-def options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
-    # кнопки с callback_data вида "pick:INDEX" (0..3)
+def options_keyboard(options: list[dict]) -> InlineKeyboardMarkup:
+    # кнопки с номерами, callback_data вида "pick:NUMBER" (1..4)
     rows = []
     row = []
-    for i, text in enumerate(options):
-        row.append(InlineKeyboardButton(text=text, callback_data=f"pick:{i}"))
+    for option in options:
+        number = option.get("number", 1)
+        button_text = f"{number}"  # показываем только номер
+        row.append(InlineKeyboardButton(text=button_text, callback_data=f"pick:{number}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -143,9 +145,27 @@ async def show_question(chat_id: int, state: FSMContext) -> None:
             parse_mode="HTML",
         )
 
-    # затем варианты
+    # затем варианты с аудио
+    for option in q["options"]:
+        number = option.get("number", 1)
+        audio_url = option.get("audio_url")
+        
+        if audio_url:
+            audio_bytes = await fetch_bytes(audio_url)
+            if audio_bytes:
+                await bot.send_audio(
+                    chat_id,
+                    types.BufferedInputFile(audio_bytes, filename=f"option_{number}.ogg"),
+                    caption=f"Вариант {number}",
+                )
+            else:
+                await bot.send_message(chat_id, f"Вариант {number}: [аудио недоступно]")
+        else:
+            await bot.send_message(chat_id, f"Вариант {number}: [нет аудио]")
+
+    # кнопки для выбора
     kb = options_keyboard(q["options"])
-    await bot.send_message(chat_id, "Выберите вариант:", reply_markup=kb)
+    await bot.send_message(chat_id, "Выберите номер варианта:", reply_markup=kb)
 
 
 # ====== START ======
@@ -184,17 +204,16 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
     options = data["last_options"]
 
     try:
-        selected_idx = int(cb.data.split(":")[1])  # 0..3
+        selected_option_id = int(cb.data.split(":")[1])  # 1..4 (прямо номер опции)
     except Exception:
         await cb.message.answer("Некорректный выбор.")
         return
 
-    if selected_idx < 0 or selected_idx >= len(options):
+    # Проверяем что номер валидный
+    valid_numbers = [opt.get("number", 1) for opt in options]
+    if selected_option_id not in valid_numbers:
         await cb.message.answer("Некорректный выбор.")
         return
-
-    # Наш бекенд принимает selected_option_id как 1..4 (позиция)
-    selected_option_id = selected_idx + 1
 
     # POST /quiz/answer
     ans = await api_post("/quiz/answer", {
