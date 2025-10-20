@@ -33,6 +33,7 @@ class Option(BaseModel):
 class Question(BaseModel):
     id: int
     prompt_text: str
+    country: Optional[str] = None
     prompt_audio: Optional[str] = None  # путь к аудио вопроса
     options: List[Option]
     correct_option_id: int
@@ -118,6 +119,7 @@ def load_questions() -> Dict[int, dict]:
             "prompt_text": prompt,
             "prompt_audio": prompt_audio,
             "answer": answer_text,
+            "country": country,
         }
 
     return raw_questions
@@ -165,10 +167,8 @@ try:
                 break
             opts_texts.append(f"un {cand}")
 
-        i = 0
-        while len(opts_texts) < _default_options:
-            opts_texts.append(f"{correct}_alt{i}")
-            i += 1
+        # If there are fewer unique distractors than default_options-1,
+        # do NOT create fake placeholder options; keep the smaller set.
 
         enumerated = opts_texts[:]
         random.shuffle(enumerated)
@@ -240,6 +240,7 @@ class AnswerOut(BaseModel):
     correct_option_id: int
     correct_option_text: str
     correct_option_audio_url: Optional[str] = None  # если correct=True и есть аудио
+    country: Optional[str] = None
     score: int
     index: int
     total: int
@@ -343,11 +344,8 @@ def start_quiz(payload: StartQuizIn):
                 break
             opts_texts.append(f"un {cand}")
 
-        # pad if needed
-        i = 0
-        while len(opts_texts) < default_options:
-            opts_texts.append(f"{correct}_alt{i}")
-            i += 1
+        # Do not pad with fake options when there are not enough unique variants;
+        # allow fewer options in that case.
 
         # shuffle options so correct isn't always first
         enumerated = opts_texts[:]
@@ -460,11 +458,19 @@ def submit_answer(payload: AnswerIn):
 
     # готовим ответ
     correct_opt = next(o for o in q.options if o.id == q.correct_option_id)
+    # include the country name (if available) in the response
+    country = None
+    # the per-session question was built from RAW_QUESTIONS which contains country
+    raw_q = RAW_QUESTIONS.get(q.id)
+    if raw_q:
+        country = raw_q.get("country")
+
     return AnswerOut(
         correct=is_correct,
         correct_option_id=correct_opt.id,
         correct_option_text=correct_opt.text,
-        correct_option_audio_url=_audio_url(correct_opt.audio),  # всегда возвращаем аудио правильного ответа
+        correct_option_audio_url=_audio_url(correct_opt.audio),  # always return correct answer audio if any
+        country=country,
         score=session.correct_count,
         index=min(session.current_index, len(session.question_ids) - 1),
         total=len(session.question_ids),
