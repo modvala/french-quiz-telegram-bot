@@ -1,26 +1,24 @@
-[
-  {
-    "id": 1,
-    "question": "Назови националност мушког пола у земљи",
-    "country": "les États-Unis",
-    "options": ["Américain", "Serbe", "Russe"],
-    "answer": "Américain",
-    "audio": "usa.mp3"
-  },
-  {
-    "id": 2,
-    "question": "Назови националност женског пола у земљи",
-    "country": "la Serbie",
-    "options": ["Serbe", "Américaine", "Russe"],
-    "answer": "Serbe",
-    "audio": "serbia.mp3"
-  },
-  {
-    "id": 3,
-    "question": "Назови националност мушког пола у земљи",
-    "country": "la Russie",
-    "options": ["Russe", "Américain", "Serbe"],
-    "answer": "Russe",
-    "audio": "russia.mp3"
-  }
-]
+{
+  "base_question": "Назови национальность в стране",
+  "default_options": 4,
+  "questions": [
+    {
+      "id": 1,
+      "country": "les États-Unis",
+      "answer": "un Américain et une Américaine",
+      "audio": "audio/q1.mp3"
+    },
+    {
+      "id": 2,
+      "country": "la Serbie",
+      "answer": "un Serbe et une Serbe",
+      "audio": "audio/q2.mp3"
+    },
+    {
+      "id": 3,
+      "country": "la Russie",
+      "answer": "un Russe et une Russe",
+      "audio": "audio/q3.mp3"
+    }
+  ]
+}

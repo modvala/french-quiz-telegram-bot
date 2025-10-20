@@ -2,10 +2,16 @@
 
 Usage: python scripts/generate_audios_from_json.py /path/to/questions.json
 
-For each item in the top-level array, the script generates two MP3 files:
+Supported input formats:
+- Legacy: top-level array of question objects (each may contain 'audio').
+- New: top-level object with key 'questions' containing the array.
+
+For each question the script generates two MP3 files:
 - One for the country name
 - One for the answer (nationality)
-Files are saved according to paths in the 'audio' field.
+
+If an item has an 'audio' field the script will reuse its stem as a base name.
+Otherwise files are named using the question id (e.g. q1_answer.mp3, q1_country.mp3).
 """
 import json
 import sys
@@ -39,31 +45,37 @@ def main():
         raise SystemExit(2)
 
     data = load_json(json_path)
-    if not isinstance(data, list):
-        print("Expected a top-level JSON array of questions.")
+
+    # Support both legacy (list) and new (dict with 'questions') formats
+    if isinstance(data, dict):
+        items = data.get("questions") or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        print("Unsupported JSON structure - expected list or object with 'questions'.")
         raise SystemExit(2)
 
     created = 0
     skipped = 0
 
-    for item in data:
-        audio_rel = item.get("audio")
-        if not audio_rel:
-            print("Skipping item without 'audio' field", item.get("id"))
-            skipped += 1
-            continue
+    for idx, item in enumerate(items, start=1):
+        # Use q{ID} as base name for all generated audio files to keep naming consistent
+        qid = item.get("id") or idx
+        audio_rel = item.get("audio")  # original (if any) - we'll overwrite below
 
         # Get the text content
         answer_text = item.get("answer")
         country_text = item.get("country")
 
         if not answer_text and not country_text:
-            print(f"Skipping item {item.get('id')}: no text content")
+            print(f"Skipping item {qid}: no text content")
             skipped += 1
             continue
 
         # Use AUDIO_DIR as base for output paths
-        audio_name = Path(audio_rel).stem
+        # Always use q{qid} as the base name for generated files
+        audio_name = f"q{qid}"
+
         answer_path = AUDIO_DIR / f"{audio_name}_answer.mp3"
         country_path = AUDIO_DIR / f"{audio_name}_country.mp3"
 
@@ -91,20 +103,35 @@ def main():
                 print(f"Failed to create {path}: {e}")
                 return False
 
-        # Generate both files if text is available
+        # Generate files for available texts
         if answer_text:
             gen_one(answer_text, answer_path)
         else:
-            print(f"No answer text for item {item.get('id')}")
+            print(f"No answer text for item {qid}")
             skipped += 1
 
         if country_text:
             gen_one(country_text, country_path)
         else:
-            print(f"No country text for item {item.get('id')}")
+            print(f"No country text for item {qid}")
             skipped += 1
 
+        # Update the item's audio field to point to the canonical base (so backend can resolve _answer/_country)
+        # We store the .mp3 value; backend._audio_url will try variants like _answer/_country
+        if isinstance(data, dict) and data.get("questions") is items:
+            item["audio"] = f"audio/{audio_name}.mp3"
+        elif isinstance(data, list):
+            item["audio"] = f"audio/{audio_name}.mp3"
+
     print(f"Done. Created: {created}, Skipped: {skipped}")
+
+    # Persist changes to JSON (update audio fields)
+    try:
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"Updated JSON file with audio paths: {json_path}")
+    except Exception as e:
+        print(f"Failed to update JSON file: {e}")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
+import random
 from uuid import uuid4, UUID
 from pathlib import Path
 import json
@@ -43,6 +44,7 @@ class QuizSession(BaseModel):
     correct_count: int = 0
     finished: bool = False
     answers: Dict[int, bool] = Field(default_factory=dict)  # question_id -> correct?
+    question_map: Dict[int, Question] = Field(default_factory=dict)  # per-session Question objects
 
 
 SESSIONS: Dict[UUID, QuizSession] = {}
@@ -90,57 +92,40 @@ def _audio_url(path: Optional[str]) -> Optional[str]:
     return path
 
 
-def load_questions() -> Dict[int, Question]:
-    questions: Dict[int, Question] = {}
+def load_questions() -> Dict[int, dict]:
+    # Return raw question data (id -> dict) from JSON
+    raw_questions: Dict[int, dict] = {}
     if not DATA_FILE.exists():
-        return questions
+        return raw_questions
+
     with DATA_FILE.open(encoding="utf-8") as f:
         raw = json.load(f)
-    for item in raw:
-        qid = int(item.get("id"))
-        # build prompt text from fields present in json
-        prompt = item.get("question") or ""
-        country = item.get("country")
-        if country:
-            prompt = f"{prompt} — {country}"
-        audio_file = item.get("audio")
-        prompt_audio = f"audio/{audio_file}" if audio_file else None
 
-        opts_texts = item.get("options", [])
-        answer_text = item.get("answer")
+    base_prompt = raw.get("base_question", "Назови национальность в стране")
+    items = raw.get("questions", [])
 
-        opts: List[Option] = []
-        correct_idx = 1
-        for i, text in enumerate(opts_texts, start=1):
-            # if this option equals answer, attach prompt audio to option
-            opt_audio = prompt_audio if answer_text and text == answer_text else None
-            opts.append(Option(id=i, text=text, audio=opt_audio))
-            if answer_text and text == answer_text:
-                correct_idx = i
+    for it in items:
+        qid = int(it.get("id"))
+        country = it.get("country")
+        prompt = f"{base_prompt} — {country}" if country else base_prompt
+        answer_text = it.get("answer")
+        prompt_audio = it.get("audio")
+        raw_questions[qid] = {
+            "id": qid,
+            "prompt_text": prompt,
+            "prompt_audio": prompt_audio,
+            "answer": answer_text,
+        }
 
-        # fallback if answer not found among options
-        if not any(o.text == answer_text for o in opts):
-            # if answer present but not in options, append it as last option
-            if answer_text:
-                opts.append(Option(id=len(opts) + 1, text=answer_text, audio=prompt_audio))
-                correct_idx = len(opts)
-
-        questions[qid] = Question(
-            id=qid,
-            prompt_text=prompt,
-            prompt_audio=prompt_audio,
-            options=opts,
-            correct_option_id=correct_idx,
-        )
-    return questions
+    return raw_questions
 
 
-# Load QUESTIONS at import time (MVP: in-memory)
-QUESTIONS: Dict[int, Question] = load_questions()
+# Load RAW questions at import time
+RAW_QUESTIONS: Dict[int, dict] = load_questions()
 
 
 def _get_question_or_404(qid: int) -> Question:
-    q = QUESTIONS.get(qid)
+    q = RAW_QUESTIONS.get(qid)
     if not q:
         raise HTTPException(404, "Question not found")
     return q
@@ -211,23 +196,79 @@ def health():
 
 @app.post("/quiz/start", response_model=StartQuizOut)
 def start_quiz(payload: StartQuizIn):
-    # возьмём первые N вопросов (или можно рандомизировать)
-    all_ids = list(QUESTIONS.keys())
+    # choose N random questions from RAW_QUESTIONS
+    all_ids = list(RAW_QUESTIONS.keys())
     if not all_ids:
         raise HTTPException(500, "No questions configured on the server")
     n = max(1, min(payload.n_questions, len(all_ids)))
-    question_ids = all_ids[:n]
+    chosen_ids = random.sample(all_ids, n)
 
     session = QuizSession(
         session_id=uuid4(),
         user_id=payload.user_id,
-        question_ids=question_ids,
+        question_ids=chosen_ids,
     )
+
+    # Build per-session Question objects with randomized options
+    # Pool of answers for distractors: extract masculine base from RAW answers
+    pool = []
+    for rid, rdata in RAW_QUESTIONS.items():
+        ans = rdata.get("answer")
+        if not ans:
+            continue
+        # try to extract masculine base
+        if ans.startswith("un ") and " et" in ans:
+            base = ans[len("un "):].split(" et")[0].strip()
+        else:
+            parts = ans.split()
+            base = parts[1] if len(parts) > 1 else parts[0]
+        pool.append(base)
+
+    for qid in chosen_ids:
+        r = RAW_QUESTIONS[qid]
+        prompt = r.get("prompt_text")
+        correct = r.get("answer")
+
+        # build options: correct (combined) + (default_options-1) distractors
+        default_options = int(json.load(DATA_FILE.open()).get("default_options", 4))
+        opts_texts = [correct]
+        candidates = [p for p in pool if p != (correct.split()[1] if len(correct.split())>1 else correct)]
+        random.shuffle(candidates)
+        for cand in candidates:
+            if len(opts_texts) >= default_options:
+                break
+            opts_texts.append(f"un {cand}")
+
+        # pad if needed
+        i = 0
+        while len(opts_texts) < default_options:
+            opts_texts.append(f"{correct}_alt{i}")
+            i += 1
+
+        # shuffle options so correct isn't always first
+        enumerated = opts_texts[:]
+        random.shuffle(enumerated)
+
+        opts: List[Option] = []
+        correct_idx = 1
+        for idx, text in enumerate(enumerated, start=1):
+            opts.append(Option(id=idx, text=text, audio=None))
+            if text == correct:
+                correct_idx = idx
+
+        session.question_map[qid] = Question(
+            id=qid,
+            prompt_text=prompt,
+            prompt_audio=r.get("prompt_audio"),
+            options=opts,
+            correct_option_id=correct_idx,
+        )
+
     SESSIONS[session.session_id] = session
     return StartQuizOut(
         session_id=session.session_id,
-        total=len(question_ids),
-        first_question_id=question_ids[0],
+        total=len(chosen_ids),
+        first_question_id=chosen_ids[0],
     )
 
 
@@ -238,9 +279,13 @@ def get_question(session_id: UUID, index: int):
         raise HTTPException(400, "Quiz already finished")
     if not (0 <= index < len(session.question_ids)):
         raise HTTPException(400, "Index out of range")
-
     qid = session.question_ids[index]
-    q = _get_question_or_404(qid)
+    # get per-session question
+    q = session.question_map.get(qid)
+    if not q:
+        # fallback to raw
+        raw = RAW_QUESTIONS.get(qid)
+        raise HTTPException(500, "Session question not prepared")
     return QuestionOut(
         session_id=session.session_id,
         index=index,
@@ -265,7 +310,10 @@ def submit_answer(payload: AnswerIn):
     if expected_qid != payload.question_id:
         raise HTTPException(400, "Question order mismatch")
 
-    q = _get_question_or_404(payload.question_id)
+    # Use per-session prepared question
+    q = session.question_map.get(payload.question_id)
+    if not q:
+        raise HTTPException(400, "Question not found in session")
     is_correct = (payload.selected_option_id == q.correct_option_id)
     session.answers[q.id] = is_correct
     if is_correct:
