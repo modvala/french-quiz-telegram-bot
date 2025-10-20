@@ -1,11 +1,18 @@
-import json
 from fastapi.testclient import TestClient
 from backend import app as backend_app
-from backend import app as backend_module
-from backend.app import QUESTIONS
 
 
 client = TestClient(backend_app.app)
+
+
+def _find_correct_option_number(options, question_id: int) -> int:
+    target_fragment = f"q{question_id}_answer"
+    for opt in options:
+        audio_url = opt.get("audio_url") or ""
+        if target_fragment in audio_url:
+            return opt["number"]
+    # fallback: return first option number if matching audio was not provided
+    return options[0]["number"]
 
 
 def test_start_and_get_question():
@@ -39,10 +46,7 @@ def test_answer_flow_correct_and_summary():
     qdata = q_resp.json()
     qid = qdata["question_id"]
 
-    # look up correct option id from loaded QUESTIONS
-    q_obj = QUESTIONS.get(qid)
-    assert q_obj is not None
-    correct_id = q_obj.correct_option_id
+    correct_id = _find_correct_option_number(qdata["options"], qid)
 
     # submit correct answer
     a_resp = client.post("/quiz/answer", json={
@@ -54,7 +58,8 @@ def test_answer_flow_correct_and_summary():
     a_data = a_resp.json()
     assert a_data["correct"] is True
     # if option had audio, correct_option_audio_url should be present
-    if any(o.id == correct_id and o.audio for o in q_obj.options):
+    target_fragment = f"q{qid}_answer"
+    if any(target_fragment in (opt.get("audio_url") or "") for opt in qdata["options"]):
         assert a_data["correct_option_audio_url"] is not None
 
     # after finishing, summary should report correct_count == 1
@@ -83,11 +88,9 @@ def test_answer_order_mismatch_and_incorrect():
     q_resp = client.get(f"/quiz/question/{session_id}/0")
     qdata = q_resp.json()
     qid = qdata["question_id"]
-    q_obj = QUESTIONS.get(qid)
+    correct_number = _find_correct_option_number(qdata["options"], qid)
     # pick an option id that is not correct
-    incorrect_id = 1
-    if q_obj.correct_option_id == 1:
-        incorrect_id = 2 if len(q_obj.options) >= 2 else 1
+    incorrect_id = next((opt["number"] for opt in qdata["options"] if opt["number"] != correct_number), correct_number)
 
     a_resp = client.post("/quiz/answer", json={
         "session_id": session_id,

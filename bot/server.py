@@ -151,6 +151,22 @@ async def show_question(chat_id: int, state: FSMContext) -> None:
     opt_numbers = [str(opt.get("number", i + 1)) for i, opt in enumerate(q.get("options", []))]
     if opt_numbers:
         await bot.send_message(chat_id, "Варианты: " + ", ".join(opt_numbers))
+        for opt in q.get("options", []):
+            audio_url = opt.get("audio_url")
+            if not audio_url:
+                continue
+            try:
+                audio_bytes = await fetch_bytes(audio_url)
+            except Exception:
+                continue
+            if audio_bytes:
+                await bot.send_audio(
+                    chat_id,
+                    types.BufferedInputFile(
+                        audio_bytes, filename=f"option_{opt.get('number', 1)}.ogg"
+                    ),
+                    caption=f"🔊 Вариант {opt.get('number', 1)}",
+                )
 
     # кнопки для выбора
     kb = options_keyboard(q["options"])

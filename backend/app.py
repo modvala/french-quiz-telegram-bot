@@ -7,8 +7,8 @@ import random
 from uuid import uuid4, UUID
 from pathlib import Path
 import json
-import hashlib
 import copy
+import os
 
 from config import settings
 
@@ -96,53 +96,8 @@ def _audio_url(path: Optional[str]) -> Optional[str]:
     return path
 
 
-def _audio_for_option_text(text: Optional[str]) -> Optional[str]:
-    """
-    Given option text like 'un Américain' try to find a matching question
-    in RAW_QUESTIONS whose answer contains the same base, and return a
-    relative audio path (e.g. 'audio/q2_answer.mp3') if a file exists.
-    """
-    if not text or not isinstance(text, str):
-        return None
-
-    # extract base similarly to other places: strip 'un ' and trailing ' et...'
-    opt_base = None
-    if text.startswith("un ") and " et" in text:
-        opt_base = text[len("un ") :].split(" et")[0].strip()
-    else:
-        parts = text.split()
-        opt_base = parts[1] if len(parts) > 1 else parts[0]
-
-    if not opt_base:
-        return None
-
-    audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
-
-    # find a RAW_QUESTION whose answer contains this base
-    for rid, rdata in RAW_QUESTIONS.items():
-        ans = rdata.get("answer")
-        if not ans:
-            continue
-        # extract base from raw answer too
-        raw_base = None
-        if ans.startswith("un ") and " et" in ans:
-            raw_base = ans[len("un ") :].split(" et")[0].strip()
-        else:
-            parts = ans.split()
-            raw_base = parts[1] if len(parts) > 1 else parts[0]
-
-        if raw_base and raw_base == opt_base:
-            # check for audio files for this question id
-            for suffix in ("_answer.mp3"):
-                candidate = audio_dir / f"q{rid}{suffix}"
-                if candidate.exists():
-                    return f"audio/q{rid}{suffix}"
-
-    return None
-
-
-def load_questions() -> Dict[int, dict]:
-    # Return raw question data (id -> dict) from JSON
+def load_questions() -> tuple[Dict[int, dict], int]:
+    """Load questions and return mapping plus configured default options count."""
     raw_questions: Dict[int, dict] = {}
     if not DATA_FILE.exists():
         return raw_questions
@@ -156,11 +111,13 @@ def load_questions() -> Dict[int, dict]:
     for it in items:
         qid = int(it.get("id"))
         country = it.get("country")
-        prompt = f"{base_prompt}: " if country else base_prompt
+        # include the country name in the prompt (e.g. "Назови национальность в стране: la Serbie")
+        prompt = f"{base_prompt}: {country}" if country else base_prompt
         answer_text = it.get("answer")
         prompt_audio = it.get("audio")
         raw_questions[qid] = {
             "id": qid,
+            "default_options": raw.get("default_options", 4),
             "prompt_text": prompt,
             "prompt_audio": prompt_audio,
             "answer": answer_text,
@@ -171,71 +128,7 @@ def load_questions() -> Dict[int, dict]:
 
 
 # Load RAW questions at import time
-RAW_QUESTIONS: Dict[int, dict] = load_questions()
-
-
-# Compatibility: prepare a lightweight QUESTIONS mapping for tests and external
-# modules that expect a mapping of question id -> Question object. This
-# preparation mirrors the options generation used in start_quiz but does NOT
-# generate audio files (audio=None) to keep import fast and side-effect free.
-QUESTIONS: Dict[int, Question] = {}
-try:
-    # Build pool of masculine bases for distractors
-    _pool = []
-    for rid, rdata in RAW_QUESTIONS.items():
-        ans = rdata.get("answer")
-        if not ans:
-            continue
-        if ans.startswith("un ") and " et" in ans:
-            base = ans[len("un "):].split(" et")[0].strip()
-        else:
-            parts = ans.split()
-            base = parts[1] if len(parts) > 1 else parts[0]
-        _pool.append(base)
-
-    _default_options = 4
-    if DATA_FILE.exists():
-        try:
-            _default_options = int(json.load(DATA_FILE.open()).get("default_options", 4))
-        except Exception:
-            _default_options = 4
-
-    for qid, r in RAW_QUESTIONS.items():
-        prompt = r.get("prompt_text")
-        correct = r.get("answer")
-
-        opts_texts = [correct]
-        candidates = [p for p in _pool if p != (correct.split()[1] if len(correct.split())>1 else correct)]
-        random.shuffle(candidates)
-        for cand in candidates:
-            if len(opts_texts) >= _default_options:
-                break
-            opts_texts.append(f"un {cand}")
-
-        # If there are fewer unique distractors than default_options-1,
-        # do NOT create fake placeholder options; keep the smaller set.
-
-        enumerated = opts_texts[:]
-        random.shuffle(enumerated)
-
-        opts: List[Option] = []
-        correct_idx = 1
-        for idx, text in enumerate(enumerated, start=1):
-            opts.append(Option(id=idx, text=text, audio=None))
-            if text == correct:
-                correct_idx = idx
-
-        QUESTIONS[qid] = Question(
-            id=qid,
-            prompt_text=prompt,
-            prompt_audio=r.get("prompt_audio"),
-            options=opts,
-            correct_option_id=correct_idx,
-        )
-except Exception:
-    # If anything goes wrong here we silently continue; tests will still run
-    # against the runtime endpoints even if QUESTIONS is incomplete.
-    pass
+RAW_QUESTIONS = load_questions()
 
 
 def _get_session_or_404(sid: UUID) -> QuizSession:
@@ -250,7 +143,7 @@ def _get_session_or_404(sid: UUID) -> QuizSession:
 
 class StartQuizIn(BaseModel):
     user_id: str
-    n_questions: int = 10
+    n_questions: int = os.environ.get("N_QUESTIONS", 10)
 
 
 class StartQuizOut(BaseModel):
@@ -324,107 +217,33 @@ def start_quiz(payload: StartQuizIn):
         question_ids=chosen_ids,
     )
 
-    # Для каждого появления вопроса (страны) в сессии опции генерируются заново
-    # Map of masculine base -> question id (to find existing audio files)
-    base_to_qid: Dict[str, int] = {}
-    for rid, rdata in RAW_QUESTIONS.items():
-        ans = rdata.get("answer")
-        if not ans:
-            continue
-        # try to extract masculine base
-        if ans.startswith("un ") and " et" in ans:
-            base = ans[len("un "):].split(" et")[0].strip()
-        else:
-            parts = ans.split()
-            base = parts[1] if len(parts) > 1 else parts[0]
-        # store first qid for this base
-        if base not in base_to_qid:
-            base_to_qid[base] = rid
-
     # Вопросы могут повторяться, поэтому question_map и доступ к вопросам по индексу (позиции)
     for pos, qid in enumerate(chosen_ids):
         r = RAW_QUESTIONS[qid]
         prompt = r.get("prompt_text")
         correct = r.get("answer")
 
-        # If we have a prebuilt QUESTIONS entry, reuse it for determinism in tests
-        pre = QUESTIONS.get(qid)
-        if pre is not None:
-            # deepcopy to avoid sharing the same object between sessions
-            inst = copy.deepcopy(pre)
-            # populate audio for options using base_to_qid mapping
-            audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
-            for opt in inst.options:
-                opt_base = None
-                if isinstance(opt.text, str):
-                    if opt.text.startswith("un ") and " et" in opt.text:
-                        opt_base = opt.text[len("un "):].split(" et")[0].strip()
-                    else:
-                        parts = opt.text.split()
-                        opt_base = parts[1] if len(parts) > 1 else parts[0]
+        # Determine how many options to generate
+        try:
+            default_options = int(r.get("default_options", 4))
+        except Exception:
+            default_options = 4
 
-                if opt_base and opt_base in base_to_qid:
-                    src_qid = base_to_qid[opt_base]
-                    if (audio_dir / f"q{src_qid}_answer.mp3").exists():
-                        opt.audio = f"audio/q{src_qid}_answer.mp3"
-                    elif (audio_dir / f"q{src_qid}_answer.ogg").exists():
-                        opt.audio = f"audio/q{src_qid}_answer.ogg"
-                    elif (audio_dir / f"q{src_qid}_country.mp3").exists():
-                        opt.audio = f"audio/q{src_qid}_country.mp3"
-                    elif (audio_dir / f"q{src_qid}_country.ogg").exists():
-                        opt.audio = f"audio/q{src_qid}_country.ogg"
-
-            session.question_map[pos] = inst
-            continue
-
-        # build options: correct (combined) + (default_options-1) distractors
-        with DATA_FILE.open() as f:
-            default_options = int(json.load(f).get("default_options", 4))
-        opts_texts = [correct]
-        # Для каждого появления вопроса кандидаты перемешиваются заново
-        candidates = [p for p in base_to_qid.keys() if p != (correct.split()[1] if len(correct.split())>1 else correct)]
-        random.shuffle(candidates)
-        for cand in candidates:
-            if len(opts_texts) >= default_options:
-                break
-            opts_texts.append(f"un {cand}")
-
-        # Do not pad with fake options when there are not enough unique variants;
-        # allow fewer options in that case.
-
-        # shuffle options so correct isn't always first
-        enumerated = opts_texts[:]
-        random.shuffle(enumerated)
+        # build option ids ensuring the correct question id is present
+        option_ids = [qid]
+        remaining_ids = [other for other in all_ids if other != qid]
+        random.shuffle(remaining_ids)
+        option_ids.extend(remaining_ids[: max(0, default_options - 1)])
+        random.shuffle(option_ids)
 
         opts: List[Option] = []
         correct_idx = 1
-        for idx, text in enumerate(enumerated, start=1):
-            # Determine base for this option (e.g. 'Américain' from 'un Américain')
-            opt_base = None
-            if isinstance(text, str):
-                if text.startswith("un ") and " et" in text:
-                    opt_base = text[len("un "):].split(" et")[0].strip()
-                else:
-                    parts = text.split()
-                    opt_base = parts[1] if len(parts) > 1 else parts[0]
-
-            audio_path = None
-            audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
-            # If we can map this base to a source question id, use that question's audio
-            if opt_base and opt_base in base_to_qid:
-                src_qid = base_to_qid[opt_base]
-                # prefer answer audio, fall back to country audio
-                if (audio_dir / f"q{src_qid}_answer.mp3").exists():
-                    audio_path = f"audio/q{src_qid}_answer.mp3"
-                elif (audio_dir / f"q{src_qid}_answer.ogg").exists():
-                    audio_path = f"audio/q{src_qid}_answer.ogg"
-                elif (audio_dir / f"q{src_qid}_country.mp3").exists():
-                    audio_path = f"audio/q{src_qid}_country.mp3"
-                elif (audio_dir / f"q{src_qid}_country.ogg").exists():
-                    audio_path = f"audio/q{src_qid}_country.ogg"
-
-            opts.append(Option(id=idx, text=text, audio=audio_path))
-            if text == correct:
+        for idx, option_qid in enumerate(option_ids, start=1):
+            answer_data = RAW_QUESTIONS.get(option_qid, {})
+            option_text = answer_data.get("answer")
+            audio_path = f"audio/q{option_qid}_answer.mp3" if option_qid else None
+            opts.append(Option(id=idx, text=option_text, audio=audio_path))
+            if option_qid == qid:
                 correct_idx = idx
 
         # store by position index so repeated qids can have distinct prepared objects
@@ -460,8 +279,6 @@ def get_question(session_id: UUID, index: int):
     for opt in q.options:
         audio_path = opt.audio
         # if option has no audio set, try to resolve it from RAW_QUESTIONS
-        if not audio_path:
-            audio_path = _audio_for_option_text(opt.text)
         option_responses.append(OptionResponse(
             number=opt.id,
             audio_url=_audio_url(audio_path)
