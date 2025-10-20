@@ -11,7 +11,6 @@ import hashlib
 import copy
 
 from config import settings
-from src.utils.tts import text_to_mp3
 
 
 app = FastAPI(title="WordQuiz API")
@@ -126,36 +125,6 @@ def load_questions() -> Dict[int, dict]:
 
 # Load RAW questions at import time
 RAW_QUESTIONS: Dict[int, dict] = load_questions()
-
-
-def _generate_option_audio(text: str) -> Optional[str]:
-    """Generate audio file for option text and return relative path."""
-    try:
-        # Create a unique filename based on text hash
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-        filename = f"option_{text_hash}"
-        
-        # Generate audio file
-        audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
-        audio_path = text_to_mp3(
-            text=text,
-            filename=filename,
-            lang="fr",
-            out_path=audio_dir
-        )
-        
-        # Return relative path from audio directory
-        return f"audio/{audio_path.name}"
-    except Exception as e:
-        print(f"Error generating audio for '{text}': {e}")
-        return None
-
-
-def _get_question_or_404(qid: int) -> Question:
-    q = RAW_QUESTIONS.get(qid)
-    if not q:
-        raise HTTPException(404, "Question not found")
-    return q
 
 
 # Compatibility: prepare a lightweight QUESTIONS mapping for tests and external
@@ -362,8 +331,23 @@ def start_quiz(payload: StartQuizIn):
         opts: List[Option] = []
         correct_idx = 1
         for idx, text in enumerate(enumerated, start=1):
-            # Generate audio for each option
-            audio_path = _generate_option_audio(text)
+            # Use pre-generated audio files. Audio files must exist at
+            # settings.AUDIO_OUTPUT_DIR with predictable names, for example:
+            #   q{qid}_opt{idx}.mp3 or q{qid}_opt{idx}.ogg
+            # We only store the relative path (audio/filename.ext) here.
+            audio_candidate_mp3 = f"audio/q{qid}_opt{idx}.mp3"
+            audio_candidate_ogg = f"audio/q{qid}_opt{idx}.ogg"
+            # prefer mp3 if exists, else ogg, else leave None
+            audio_path = None
+            audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
+            if (audio_dir / f"q{qid}_opt{idx}.mp3").exists():
+                audio_path = audio_candidate_mp3
+            elif (audio_dir / f"q{qid}_opt{idx}.ogg").exists():
+                audio_path = audio_candidate_ogg
+            else:
+                # no audio file found — set to None (caller will handle missing audio)
+                audio_path = None
+
             opts.append(Option(id=idx, text=text, audio=audio_path))
             if text == correct:
                 correct_idx = idx
