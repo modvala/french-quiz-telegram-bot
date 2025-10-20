@@ -231,23 +231,6 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.answer("Некорректный выбор.")
         return
 
-    # Найдём объект опции, чтобы при наличии аудио проиграть его по выбору
-    chosen_opt = next((opt for opt in options if opt.get("number") == selected_option_id), None)
-    if chosen_opt:
-        audio_url = chosen_opt.get("audio_url")
-        if audio_url:
-            try:
-                audio_bytes = await fetch_bytes(audio_url)
-                if audio_bytes:
-                    await bot.send_audio(
-                        cb.message.chat.id,
-                        types.BufferedInputFile(audio_bytes, filename=f"option_{selected_option_id}.ogg"),
-                        caption=f"Вариант {selected_option_id}",
-                    )
-            except Exception:
-                # не критично — продолжаем без воспроизведения
-                pass
-
     # POST /quiz/answer
     ans = await api_post("/quiz/answer", {
         "session_id": session_id,
@@ -262,15 +245,6 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
             await cb.message.answer(f"✅ Правильно! Страна: <b>{country}</b>", parse_mode="HTML")
         else:
             await cb.message.answer("✅ Правильно!")
-        # if there's audio for the correct option — play it
-        if ans.get("correct_option_audio_url"):
-            audio_bytes = await fetch_bytes(ans["correct_option_audio_url"])
-            if audio_bytes:
-                await bot.send_audio(
-                    cb.message.chat.id,
-                    types.BufferedInputFile(audio_bytes, filename="answer.ogg"),
-                    caption=f"🔊 {ans['correct_option_text']}",
-                )
     else:
         # On incorrect answer show correct answer text and country (if any),
         # and play the correct option audio if available.
