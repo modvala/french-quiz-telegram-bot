@@ -279,8 +279,8 @@ def start_quiz(payload: StartQuizIn):
     )
 
     # Для каждого появления вопроса (страны) в сессии опции генерируются заново
-    # Pool of answers for distractors: extract masculine base from RAW answers
-    pool = []
+    # Map of masculine base -> question id (to find existing audio files)
+    base_to_qid: Dict[str, int] = {}
     for rid, rdata in RAW_QUESTIONS.items():
         ans = rdata.get("answer")
         if not ans:
@@ -291,7 +291,9 @@ def start_quiz(payload: StartQuizIn):
         else:
             parts = ans.split()
             base = parts[1] if len(parts) > 1 else parts[0]
-        pool.append(base)
+        # store first qid for this base
+        if base not in base_to_qid:
+            base_to_qid[base] = rid
 
     # Вопросы могут повторяться, поэтому question_map и доступ к вопросам по индексу (позиции)
     for pos, qid in enumerate(chosen_ids):
@@ -303,7 +305,30 @@ def start_quiz(payload: StartQuizIn):
         pre = QUESTIONS.get(qid)
         if pre is not None:
             # deepcopy to avoid sharing the same object between sessions
-            session.question_map[pos] = copy.deepcopy(pre)
+            inst = copy.deepcopy(pre)
+            # populate audio for options using base_to_qid mapping
+            audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
+            for opt in inst.options:
+                opt_base = None
+                if isinstance(opt.text, str):
+                    if opt.text.startswith("un ") and " et" in opt.text:
+                        opt_base = opt.text[len("un "):].split(" et")[0].strip()
+                    else:
+                        parts = opt.text.split()
+                        opt_base = parts[1] if len(parts) > 1 else parts[0]
+
+                if opt_base and opt_base in base_to_qid:
+                    src_qid = base_to_qid[opt_base]
+                    if (audio_dir / f"q{src_qid}_answer.mp3").exists():
+                        opt.audio = f"audio/q{src_qid}_answer.mp3"
+                    elif (audio_dir / f"q{src_qid}_answer.ogg").exists():
+                        opt.audio = f"audio/q{src_qid}_answer.ogg"
+                    elif (audio_dir / f"q{src_qid}_country.mp3").exists():
+                        opt.audio = f"audio/q{src_qid}_country.mp3"
+                    elif (audio_dir / f"q{src_qid}_country.ogg").exists():
+                        opt.audio = f"audio/q{src_qid}_country.ogg"
+
+            session.question_map[pos] = inst
             continue
 
         # build options: correct (combined) + (default_options-1) distractors
@@ -311,7 +336,7 @@ def start_quiz(payload: StartQuizIn):
             default_options = int(json.load(f).get("default_options", 4))
         opts_texts = [correct]
         # Для каждого появления вопроса кандидаты перемешиваются заново
-        candidates = [p for p in pool if p != (correct.split()[1] if len(correct.split())>1 else correct)]
+        candidates = [p for p in base_to_qid.keys() if p != (correct.split()[1] if len(correct.split())>1 else correct)]
         random.shuffle(candidates)
         for cand in candidates:
             if len(opts_texts) >= default_options:
@@ -331,22 +356,29 @@ def start_quiz(payload: StartQuizIn):
         opts: List[Option] = []
         correct_idx = 1
         for idx, text in enumerate(enumerated, start=1):
-            # Use pre-generated audio files. Audio files must exist at
-            # settings.AUDIO_OUTPUT_DIR with predictable names, for example:
-            #   q{qid}_opt{idx}.mp3 or q{qid}_opt{idx}.ogg
-            # We only store the relative path (audio/filename.ext) here.
-            audio_candidate_mp3 = f"audio/q{qid}_opt{idx}.mp3"
-            audio_candidate_ogg = f"audio/q{qid}_opt{idx}.ogg"
-            # prefer mp3 if exists, else ogg, else leave None
+            # Determine base for this option (e.g. 'Américain' from 'un Américain')
+            opt_base = None
+            if isinstance(text, str):
+                if text.startswith("un ") and " et" in text:
+                    opt_base = text[len("un "):].split(" et")[0].strip()
+                else:
+                    parts = text.split()
+                    opt_base = parts[1] if len(parts) > 1 else parts[0]
+
             audio_path = None
             audio_dir = Path(settings.AUDIO_OUTPUT_DIR)
-            if (audio_dir / f"q{qid}_opt{idx}.mp3").exists():
-                audio_path = audio_candidate_mp3
-            elif (audio_dir / f"q{qid}_opt{idx}.ogg").exists():
-                audio_path = audio_candidate_ogg
-            else:
-                # no audio file found — set to None (caller will handle missing audio)
-                audio_path = None
+            # If we can map this base to a source question id, use that question's audio
+            if opt_base and opt_base in base_to_qid:
+                src_qid = base_to_qid[opt_base]
+                # prefer answer audio, fall back to country audio
+                if (audio_dir / f"q{src_qid}_answer.mp3").exists():
+                    audio_path = f"audio/q{src_qid}_answer.mp3"
+                elif (audio_dir / f"q{src_qid}_answer.ogg").exists():
+                    audio_path = f"audio/q{src_qid}_answer.ogg"
+                elif (audio_dir / f"q{src_qid}_country.mp3").exists():
+                    audio_path = f"audio/q{src_qid}_country.mp3"
+                elif (audio_dir / f"q{src_qid}_country.ogg").exists():
+                    audio_path = f"audio/q{src_qid}_country.ogg"
 
             opts.append(Option(id=idx, text=text, audio=audio_path))
             if text == correct:
