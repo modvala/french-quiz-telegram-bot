@@ -13,6 +13,7 @@ import os
 from config import settings
 
 
+
 app = FastAPI(title="WordQuiz API")
 
 # === Статика (аудио) ===
@@ -21,34 +22,19 @@ static_dir = Path(settings.AUDIO_OUTPUT_DIR)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
-# === МОДЕЛИ ДАННЫХ ===
-
-
-class Option(BaseModel):
-    id: int
-    text: str
-    audio: Optional[str] = None  # путь к аудио варианта
-
-
-class Question(BaseModel):
-    id: int
-    prompt_text: str
-    country: Optional[str] = None
-    prompt_audio: Optional[str] = None  # путь к аудио вопроса
-    options: List[Option]
-    correct_option_id: int
-
-
-class QuizSession(BaseModel):
-    session_id: UUID
-    user_id: str
-    question_ids: List[int]
-    current_index: int = 0
-    correct_count: int = 0
-    finished: bool = False
-    answers: Dict[int, bool] = Field(default_factory=dict)  # question_id -> correct?
-    # per-session Question objects keyed by position index (0..n-1)
-    question_map: Dict[int, Question] = Field(default_factory=dict)
+# Models and API schemas moved to `backend.schemas`
+from .schemas import (
+    Option,
+    Question,
+    QuizSession,
+    StartQuizIn,
+    StartQuizOut,
+    OptionResponse,
+    QuestionOut,
+    AnswerIn,
+    AnswerOut,
+    SummaryOut,
+)
 
 
 SESSIONS: Dict[UUID, QuizSession] = {}

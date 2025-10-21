@@ -1,0 +1,70 @@
+@startuml UserFlow
+' User flow (activity) for the quiz bot
+
+@startuml UserFlow
+' User flow (activity) for the quiz bot (User - Bot - Backend)
+
+|User|
+start
+:Open chat / send /start;
+
+|Bot|
+:POST /quiz/start -> Backend;
+
+|Backend|
+:Handle POST /quiz/start (create session, choose questions);
+:Return {session_id, total, first_question_id};
+
+|Bot|
+:Set state = Active; store session_id, index=0, total;
+:Send message "🚀 Начинаем квиз!";
+:GET /quiz/question/{session_id}/{index} -> Backend;
+
+|Backend|
+:Handle GET /quiz/question (prepare QuestionOut);
+:Return question payload (prompt_text, prompt_audio_url, options[]);
+
+|Bot|
+:Send question text and optional prompt audio;
+:Send option buttons (pick:1..N);
+
+|User|
+:Press option button (pick:NUMBER);
+
+|Bot|
+:POST /quiz/answer -> Backend;
+
+|Backend|
+:Handle POST /quiz/answer (validate, update session);
+:Return answer payload (correct, correct_option_text, finished, score, country, correct_option_audio_url);
+
+|Bot|
+if (answer correct?) then (yes)
+  :Send "✅ Правильно!" message (and country if present);
+else (no)
+  :Send "❌ Неправильно" message with correct answer;
+  :Play correct answer audio (if present);
+endif
+
+if (finished?) then (yes)
+  |Bot|
+  :GET /quiz/summary/{session_id} -> Backend;
+  |Backend|
+  :Handle GET /quiz/summary (build SummaryOut);
+  :Return summary (correct_count, total, details);
+  |Bot|
+  :Set state = Idle; send summary with Restart button;
+  stop
+else (no)
+  :Update index = index + 1; send "Next" button;
+  |User|
+  :Press "Next";
+  |Bot|
+  :GET /quiz/question/{session_id}/{index} -> Backend;
+  |Backend|
+  :Handle GET /quiz/question and return question payload;
+  |Bot|
+  :Send question text and option buttons;
+endif
+
+@enduml
