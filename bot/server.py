@@ -230,6 +230,11 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.answer("Некорректный выбор.")
         return
 
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     # POST /quiz/answer
     ans = await api_post("/quiz/answer", {
         "session_id": session_id,
