@@ -23,6 +23,7 @@ from config import settings
 class QuizState(StatesGroup):
     active = State()  # в процессе квиза
     idle = State()    # ожидание / конец
+    picking_module = State()  # выбор модуля на старте
 
 # В state будем хранить:
 # {
@@ -106,14 +107,64 @@ def next_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def modules_keyboard(modules: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for m in modules:
+        title = m.get("title") or m.get("slug")
+        slug = m.get("slug")
+        row.append(InlineKeyboardButton(text=title, callback_data=f"module:{slug}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_modules(chat_id: int, state: FSMContext) -> None:
+    """Запросить список модулей и показать пользователю выбор."""
+    try:
+        payload = await api_get("/modules")
+        modules = payload.get("modules", [])
+    except Exception:
+        modules = []
+
+    # если модулей нет/ошибка — откат к первому (legacy)
+    if not modules:
+        # сохраняем, что работаем в legacy-режиме и стартуем сразу
+        await state.update_data(module_slug=None, module_base="")
+        await bot.send_message(chat_id, "🚀 Начинаем квиз (по умолчанию).")
+        try:
+            started = await api_post("/quiz/start", {
+                "user_id": str(chat_id),
+                "n_questions": settings.N_QUESTIONS
+            })
+        except Exception:
+            await bot.send_message(chat_id, "Сервер недоступен. Попробуйте позже.")
+            return
+        await state.set_state(QuizState.active)
+        await state.update_data(
+            session_id=started["session_id"],
+            index=0,
+            total=started.get("total", 0),
+        )
+        await show_question(chat_id, state)
+        return
+
+    await state.set_state(QuizState.picking_module)
+    await bot.send_message(chat_id, "Выберите модуль:", reply_markup=modules_keyboard(modules))
+
+
 # ====== Показ вопроса ======
 async def show_question(chat_id: int, state: FSMContext) -> None:
     data = await state.get_data()
     session_id = data["session_id"]
     index = data["index"]
+    module_base = data.get("module_base", "")  # например: "/modules/nationalities" или ""
 
     # GET /quiz/question/{session_id}/{index}
-    q = await api_get(f"/quiz/question/{session_id}/{index}")
+    q = await api_get(f"{module_base}/quiz/question/{session_id}/{index}")
 
     # сохраним данные для ответа
     await state.update_data(
@@ -176,31 +227,57 @@ async def show_question(chat_id: int, state: FSMContext) -> None:
 @dp.message(CommandStart())
 async def start_cmd(m: types.Message, state: FSMContext):
     await state.clear()
-    user_id = str(m.from_user.id)
+    # Показать выбор модуля
+    await show_modules(m.chat.id, state)
 
-    # POST /quiz/start
+
+@dp.callback_query(F.data.startswith("module:"))
+async def choose_module(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    user_id = str(cb.from_user.id)
+    slug = cb.data.split(":", 1)[1]
+
+    # строим базовый путь для выбранного модуля
+    module_base = f"/modules/{slug}" if slug else ""
+
+    # Стартуем выбранный модуль
     try:
-        started = await api_post("/quiz/start", {
+        started = await api_post(f"{module_base}/quiz/start", {
             "user_id": user_id,
             "n_questions": settings.N_QUESTIONS
         })
     except Exception as e:
-        # Handle backend unavailable / HTTP errors gracefully
+        # попробуем legacy как фоллбек, если выбран первый модуль
         err_text = str(e)
-        try:
-            await m.answer("Не удалось связаться с сервером викторины. Пожалуйста, попробуйте позже.")
-        except Exception:
-            pass
-        # Log to console as well
-        print(f"Error starting quiz for user {user_id}: {err_text}")
-        return
+        if slug:
+            try:
+                started = await api_post("/quiz/start", {
+                    "user_id": user_id,
+                    "n_questions": settings.N_QUESTIONS
+                })
+                # если получилось — работаем в legacy режиме
+                module_base = ""
+            except Exception:
+                await cb.message.answer("Не удалось запустить модуль. Попробуйте позже.")
+                print(f"Error starting module {slug} for user {user_id}: {err_text}")
+                return
+        else:
+            await cb.message.answer("Не удалось запустить модуль. Попробуйте позже.")
+            print(f"Error starting quiz for user {user_id}: {err_text}")
+            return
 
     session_id = started["session_id"]
     await state.set_state(QuizState.active)
-    await state.update_data(session_id=session_id, index=0, total=started["total"])
+    await state.update_data(
+        session_id=session_id,
+        index=0,
+        total=started["total"],
+        module_slug=slug,
+        module_base=module_base,
+    )
 
-    await m.answer("🚀 Начинаем квиз!")
-    await show_question(m.chat.id, state)
+    await cb.message.answer("🚀 Начинаем!")
+    await show_question(cb.message.chat.id, state)
 
 
 # ====== Выбор варианта ======
@@ -236,7 +313,8 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
         pass
 
     # POST /quiz/answer
-    ans = await api_post("/quiz/answer", {
+    module_base = data.get("module_base", "")
+    ans = await api_post(f"{module_base}/quiz/answer", {
         "session_id": session_id,
         "question_id": question_id,
         "selected_option_id": selected_option_id
@@ -281,7 +359,7 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
     # Продолжение или итог
     if ans["finished"]:
         # GET /quiz/summary/{session_id}
-        summary = await api_get(f"/quiz/summary/{session_id}")
+        summary = await api_get(f"{module_base}/quiz/summary/{session_id}")
         await state.set_state(QuizState.idle)
         await cb.message.answer(
             f"🏁 Квиз завершён!\n"
@@ -301,7 +379,9 @@ async def pick_option(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "restart")
 async def restart(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
-    await start_cmd(cb.message, state)
+    # Возврат к выбору модуля
+    await state.clear()
+    await show_modules(cb.message.chat.id, state)
 
 
 # Обработчик кнопки "Следующий вопрос"

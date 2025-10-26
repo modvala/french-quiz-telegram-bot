@@ -1,14 +1,8 @@
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
-import random
-from uuid import uuid4, UUID
+from typing import Dict
 from pathlib import Path
-import json
-import copy
-import os
 
 from config import settings
 
@@ -21,164 +15,8 @@ app = FastAPI(title="WordQuiz API")
 static_dir = Path(settings.AUDIO_OUTPUT_DIR)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-
-# Models and API schemas moved to `backend.schemas`
-from .schemas import (
-    Option,
-    Question,
-    QuizSession,
-    StartQuizIn,
-    StartQuizOut,
-    OptionResponse,
-    QuestionOut,
-    AnswerIn,
-    AnswerOut,
-    SummaryOut,
-)
-
-
-SESSIONS: Dict[UUID, QuizSession] = {}
-
-
-# Data file (matches structure in attachments)
-DATA_FILE = Path(__file__).parent / "data" / "nationalies" / "questions.json"
-
-
-def _audio_url(path: Optional[str]) -> Optional[str]:
-    if not path:
-        return None
-    # If stored path is like "audio/filename.ext" we want to return a URL
-    # under /static. Depending on how the static files are mounted the
-    # actual files may live in a folder that already is the audio folder
-    # (e.g. settings.AUDIO_OUTPUT_DIR == '.../data/audio'). In that case
-    # the correct URL is "/static/filename.ext" (not "/static/audio/filename.ext").
-    if path.startswith("audio/"):
-        # If the static root itself is an "audio" folder, strip the prefix
-        static_root = Path(settings.AUDIO_OUTPUT_DIR)
-        rel = path.split('/', 1)[1]
-        # Check if file exists as given under AUDIO_OUTPUT_DIR
-        candidate = static_root / rel
-        if candidate.exists():
-            # return /static/<rel> when static root is already the audio folder
-            if static_root.name == "audio":
-                return f"/static/{rel}"
-            return f"/static/audio/{rel}"
-
-        # Try common variants: <stem>_country.ext or <stem>_answer.ext
-        stem = Path(rel).stem
-        ext = Path(rel).suffix
-        variants = [f"{stem}_country{ext}", f"{stem}_answer{ext}"]
-        for v in variants:
-            cand = static_root / v
-            if cand.exists():
-                if static_root.name == "audio":
-                    return f"/static/{v}"
-                return f"/static/audio/{v}"
-
-        # Fallback to original URL (may 404)
-        if static_root.name == "audio":
-            return f"/static/{rel}"
-        return f"/static/{path}"
-    return path
-
-
-def load_questions() -> tuple[Dict[int, dict], int]:
-    """Load questions and return mapping plus configured default options count."""
-    raw_questions: Dict[int, dict] = {}
-    if not DATA_FILE.exists():
-        return raw_questions
-
-    with DATA_FILE.open(encoding="utf-8") as f:
-        raw = json.load(f)
-
-    base_prompt = raw.get("base_question", "Назови национальность в стране")
-    items = raw.get("questions", [])
-
-    for it in items:
-        qid = int(it.get("id"))
-        country = it.get("country")
-        # include the country name in the prompt (e.g. "Назови национальность в стране: la Serbie")
-        prompt = f"{base_prompt}:" if country else base_prompt
-        answer_text = it.get("answer")
-        prompt_audio = it.get("audio")
-        raw_questions[qid] = {
-            "id": qid,
-            "default_options": raw.get("default_options", 4),
-            "prompt_text": prompt,
-            "prompt_audio": prompt_audio,
-            "answer": answer_text,
-            "country": country,
-        }
-
-    return raw_questions
-
-
-# Load RAW questions at import time
-RAW_QUESTIONS = load_questions()
-
-
-def _get_session_or_404(sid: UUID) -> QuizSession:
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "Session not found")
-    return s
-
-
-# === SCHEMAS для API ===
-
-
-class StartQuizIn(BaseModel):
-    user_id: str
-    n_questions: int = os.environ.get("N_QUESTIONS", 10)
-
-
-class StartQuizOut(BaseModel):
-    session_id: UUID
-    total: int
-    first_question_id: int
-
-
-class OptionResponse(BaseModel):
-    number: int  # номер для выбора (1, 2, 3, 4)
-    audio_url: Optional[str] = None  # аудио для воспроизведения
-
-
-class QuestionOut(BaseModel):
-    session_id: UUID
-    index: int
-    total: int
-    question_id: int
-    prompt_text: str
-    prompt_audio_url: Optional[str] = None
-    options: List[OptionResponse]  # возвращаем номера с аудио
-
-
-class AnswerIn(BaseModel):
-    session_id: UUID
-    question_id: int
-    selected_option_id: int
-
-
-class AnswerOut(BaseModel):
-    correct: bool
-    correct_option_id: int
-    correct_option_text: str
-    correct_option_audio_url: Optional[str] = None  # если correct=True и есть аудио
-    country: Optional[str] = None
-    score: int
-    index: int
-    total: int
-    finished: bool
-
-
-class SummaryOut(BaseModel):
-    session_id: UUID
-    total: int
-    correct_count: int
-    details: List[Dict[str, str]]  # {question_id, result}
-
-
-# === ЭНДПОИНТЫ ===
+from .config import MODULES_ORDER, MODULES_META
+from .modules import get_router_for, list_modules
 
 
 @app.get("/health")
@@ -186,160 +24,23 @@ def health():
     return {"ok": True}
 
 
-@app.post("/quiz/start", response_model=StartQuizOut)
-def start_quiz(payload: StartQuizIn):
-    # choose N random questions from RAW_QUESTIONS
-    all_ids = list(RAW_QUESTIONS.keys())
-    if not all_ids:
-        raise HTTPException(500, "No questions configured on the server")
-    # n_questions может быть любым, вопросы выбираются с повторениями
-    n = max(1, int(payload.n_questions))
-    # random.choices позволяет выбрать с повторениями
-    chosen_ids = random.choices(all_ids, k=n)
-
-    session = QuizSession(
-        session_id=uuid4(),
-        user_id=payload.user_id,
-        question_ids=chosen_ids,
-    )
-
-    # Вопросы могут повторяться, поэтому question_map и доступ к вопросам по индексу (позиции)
-    for pos, qid in enumerate(chosen_ids):
-        r = RAW_QUESTIONS[qid]
-        prompt = r.get("prompt_text")
-        correct = r.get("answer")
-
-        # Determine how many options to generate
-        try:
-            default_options = int(r.get("default_options", 4))
-        except Exception:
-            default_options = 4
-
-        # build option ids ensuring the correct question id is present
-        option_ids = [qid]
-        remaining_ids = [other for other in all_ids if other != qid]
-        random.shuffle(remaining_ids)
-        option_ids.extend(remaining_ids[: max(0, default_options - 1)])
-        random.shuffle(option_ids)
-
-        opts: List[Option] = []
-        correct_idx = 1
-        for idx, option_qid in enumerate(option_ids, start=1):
-            answer_data = RAW_QUESTIONS.get(option_qid, {})
-            option_text = answer_data.get("answer")
-            audio_path = f"audio/q{option_qid}_answer.mp3" if option_qid else None
-            opts.append(Option(id=idx, text=option_text, audio=audio_path))
-            if option_qid == qid:
-                correct_idx = idx
-
-        # store by position index so repeated qids can have distinct prepared objects
-        session.question_map[pos] = Question(
-            id=qid,
-            prompt_text=prompt,
-            prompt_audio=r.get("prompt_audio"),
-            options=opts,
-            correct_option_id=correct_idx,
-        )
-
-    SESSIONS[session.session_id] = session
-    return StartQuizOut(
-        session_id=session.session_id,
-        total=len(chosen_ids),
-        first_question_id=chosen_ids[0],
-    )
+@app.get("/modules")
+def list_available_modules():
+    return {"modules": list_modules(MODULES_ORDER, MODULES_META)}
 
 
-@app.get("/quiz/question/{session_id}/{index}", response_model=QuestionOut)
-def get_question(session_id: UUID, index: int):
-    session = _get_session_or_404(session_id)
-    if session.finished:
-        raise HTTPException(400, "Quiz already finished")
-    if not (0 <= index < len(session.question_ids)):
-        raise HTTPException(400, "Index out of range")
-    # get per-session question by index (поддержка повторяющихся вопросов)
-    q = session.question_map.get(index)
-    if not q:
-        raise HTTPException(500, "Session question not prepared")
-    # Prepare options with numbers and audio URLs
-    option_responses = []
-    for opt in q.options:
-        audio_path = opt.audio
-        # if option has no audio set, try to resolve it from RAW_QUESTIONS
-        option_responses.append(OptionResponse(
-            number=opt.id,
-            audio_url=_audio_url(audio_path)
-        ))
-    
-    return QuestionOut(
-        session_id=session.session_id,
-        index=index,
-        total=len(session.question_ids),
-        question_id=q.id,
-        prompt_text=q.prompt_text,
-        prompt_audio_url=_audio_url(q.prompt_audio),
-        options=option_responses,
-    )
+# Include routers for each module under /modules/<slug>
+for slug in MODULES_ORDER:
+    try:
+        router = get_router_for(slug)
+    except Exception:
+        continue
+    app.include_router(router, prefix=f"/modules/{slug}")
 
-
-@app.post("/quiz/answer", response_model=AnswerOut)
-def submit_answer(payload: AnswerIn):
-    session = _get_session_or_404(payload.session_id)
-    if session.finished:
-        raise HTTPException(400, "Quiz already finished")
-
-    # проверяем, что это ожидаемый вопрос (по позиции)
-    if not (0 <= session.current_index < len(session.question_ids)):
-        raise HTTPException(400, "Invalid session index")
-    expected_qid = session.question_ids[session.current_index]
-    if expected_qid != payload.question_id:
-        raise HTTPException(400, "Question order mismatch")
-
-    # Use per-session prepared question by current index (поддержка повторяющихся вопросов)
-    q = session.question_map.get(session.current_index)
-    if not q:
-        raise HTTPException(400, "Question not found in session")
-    is_correct = (payload.selected_option_id == q.correct_option_id)
-    session.answers[q.id] = is_correct
-    if is_correct:
-        session.correct_count += 1
-
-    # продвигаем индекс/завершаем при необходимости
-    session.current_index += 1
-    if session.current_index >= len(session.question_ids):
-        session.finished = True
-
-    # готовим ответ
-    correct_opt = next(o for o in q.options if o.id == q.correct_option_id)
-    # include the country name (if available) in the response
-    country = None
-    # the per-session question was built from RAW_QUESTIONS which contains country
-    raw_q = RAW_QUESTIONS.get(q.id)
-    if raw_q:
-        country = raw_q.get("country")
-
-    return AnswerOut(
-        correct=is_correct,
-        correct_option_id=correct_opt.id,
-        correct_option_text=correct_opt.text,
-        correct_option_audio_url=_audio_url(correct_opt.audio),  # always return correct answer audio if any
-        country=country,
-        score=session.correct_count,
-        index=min(session.current_index, len(session.question_ids) - 1),
-        total=len(session.question_ids),
-        finished=session.finished,
-    )
-
-
-@app.get("/quiz/summary/{session_id}", response_model=SummaryOut)
-def summary(session_id: UUID):
-    session = _get_session_or_404(session_id)
-    return SummaryOut(
-        session_id=session.session_id,
-        total=len(session.question_ids),
-        correct_count=session.correct_count,
-        details=[
-            {"question_id": str(qid), "result": "correct" if session.answers.get(qid) else "wrong"}
-            for qid in session.question_ids
-        ],
-    )
+# Keep legacy endpoints for the first module (nationalities) at root
+try:
+    legacy_router = get_router_for(MODULES_ORDER[0])
+    app.include_router(legacy_router)
+except Exception:
+    pass
 

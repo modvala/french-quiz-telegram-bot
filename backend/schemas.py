@@ -5,18 +5,18 @@ from uuid import UUID
 import os
 
 
-class Option(BaseModel):
+class Card(BaseModel):
     id: int
     text: str
     audio: Optional[str] = None  # путь к аудио варианта
+    image: Optional[str] = None  # путь к изображению варианта
 
 
 class Question(BaseModel):
     id: int
     prompt_text: str
-    country: Optional[str] = None
-    prompt_audio: Optional[str] = None  # путь к аудио вопроса
-    options: List[Option]
+    question: Card
+    options: List[Card]
     correct_option_id: int
 
 
